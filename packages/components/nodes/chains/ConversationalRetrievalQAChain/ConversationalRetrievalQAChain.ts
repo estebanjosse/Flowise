@@ -30,6 +30,11 @@ type RetrievalChainInput = {
     question: string
 }
 
+type ConversationalRetrievalQAResult = {
+    text: string
+    sourceDocuments: Document[]
+}
+
 const sourceRunnableName = 'FindDocs'
 
 class ConversationalRetrievalQAChain_Chains implements INode {
@@ -220,19 +225,8 @@ class ConversationalRetrievalQAChain_Chains implements INode {
 
         const history = ((await memory.getChatMessages(this.sessionId, false, prependMessages)) as IMessage[]) ?? []
         const baseChatHistory = serializeHistory({ chat_history: history }) as BaseMessage[]
-        const formattedChatHistory = formatChatHistoryAsString(baseChatHistory)
-        const hasChatHistory = formattedChatHistory.length > 0
+        const hasChatHistory = baseChatHistory.length > 0
         const skipK = hasChatHistory ? 1 : 0
-        const retrieverChain = createRetrieverChain(model, vectorStoreRetriever, rephrasePrompt)
-        let sourceDocuments: ICommonObject[] = []
-
-        if (returnSourceDocuments) {
-            const retrievedDocuments = (await retrieverChain.invoke({
-                question: input,
-                chat_history: formattedChatHistory
-            })) as Document[]
-            sourceDocuments = (retrievedDocuments ?? []) as ICommonObject[]
-        }
 
         const loggerHandler = new ConsoleCallbackHandler(options.logger, options?.orgId)
         const additionalCallback = await additionalCallbacks(nodeData, options)
@@ -244,10 +238,15 @@ class ConversationalRetrievalQAChain_Chains implements INode {
         }
 
         if (shouldStreamResponse) {
-            callbacks.push(new CustomChainHandler(sseStreamer, chatId, skipK))
+            callbacks.push(new CustomChainHandler(sseStreamer, chatId, skipK, returnSourceDocuments))
         }
 
-        const text = (await answerChain.invoke({ question: input, chat_history: history }, { callbacks })) as string
+        const result = (await answerChain.invoke(
+            { question: input, chat_history: history },
+            { callbacks }
+        )) as ConversationalRetrievalQAResult
+        const text = result?.text ?? ''
+        const sourceDocuments = (result?.sourceDocuments ?? []) as ICommonObject[]
 
         await memory.addChatMessages(
             [
@@ -324,24 +323,37 @@ const createChain = (
 ) => {
     const retrieverChain = createRetrieverChain(llm, retriever, rephrasePrompt)
 
-    const context = RunnableMap.from({
-        context: RunnableSequence.from([
-            ({ question, chat_history }) => ({
-                question,
-                chat_history: formatChatHistoryAsString(chat_history)
+    const context = RunnableSequence.from([
+        RunnableMap.from({
+            sourceDocuments: RunnableSequence.from([
+                ({ question, chat_history }) => ({
+                    question,
+                    chat_history: formatChatHistoryAsString(chat_history)
+                }),
+                retrieverChain
+            ]).withConfig({ runName: sourceRunnableName }),
+            question: RunnableLambda.from((input: RetrievalChainInput) => input.question).withConfig({
+                runName: 'Itemgetter:question'
             }),
-            retrieverChain,
-            RunnableLambda.from(formatDocs).withConfig({
-                runName: 'FormatDocumentChunks'
+            chat_history: RunnableLambda.from((input: RetrievalChainInput) => input.chat_history).withConfig({
+                runName: 'Itemgetter:chat_history'
             })
-        ]),
-        question: RunnableLambda.from((input: RetrievalChainInput) => input.question).withConfig({
-            runName: 'Itemgetter:question'
         }),
-        chat_history: RunnableLambda.from((input: RetrievalChainInput) => input.chat_history).withConfig({
-            runName: 'Itemgetter:chat_history'
+        RunnableMap.from({
+            sourceDocuments: RunnableLambda.from((input: { sourceDocuments: Document[] }) => input.sourceDocuments).withConfig({
+                runName: 'Itemgetter:sourceDocuments'
+            }),
+            context: RunnableLambda.from((input: { sourceDocuments: Document[] }) => formatDocs(input.sourceDocuments)).withConfig({
+                runName: 'FormatDocumentChunks'
+            }),
+            question: RunnableLambda.from((input: { question: string }) => input.question).withConfig({
+                runName: 'Itemgetter:question'
+            }),
+            chat_history: RunnableLambda.from((input: { chat_history: BaseMessage[] }) => input.chat_history).withConfig({
+                runName: 'Itemgetter:chat_history'
+            })
         })
-    }).withConfig({ tags: ['RetrieveDocs'] })
+    ]).withConfig({ tags: ['RetrieveDocs'] })
 
     const prompt = ChatPromptTemplate.fromMessages([
         ['system', responsePrompt],
@@ -363,7 +375,12 @@ const createChain = (
             })
         },
         context,
-        responseSynthesizerChain
+        RunnableMap.from({
+            text: responseSynthesizerChain,
+            sourceDocuments: RunnableLambda.from((input: { sourceDocuments: Document[] }) => input.sourceDocuments).withConfig({
+                runName: 'Itemgetter:sourceDocuments'
+            })
+        })
     ])
 
     return conversationalQAChain

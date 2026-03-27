@@ -104,4 +104,18 @@ describe('ConversationalRetrievalQAChain test harness', () => {
         )
         expect(harness.sseStreamer.streamEndEvent).toHaveBeenCalledWith('chat-1')
     })
+
+    it('streams progressive answer tokens during a streaming run', async () => {
+        const harness = createHarness({
+            responses: ['Progressive streaming answer']
+        })
+
+        await harness.node.run(harness.nodeData, 'Stream the answer progressively', harness.options)
+
+        const streamedTokens = harness.sseStreamer.streamTokenEvent.mock.calls.map(([, token]) => token)
+
+        expect(harness.sseStreamer.streamStartEvent).toHaveBeenCalled()
+        expect(streamedTokens.length).toBeGreaterThan(1)
+        expect(streamedTokens.join('')).toBe('Progressive streaming answer')
+    })
 })

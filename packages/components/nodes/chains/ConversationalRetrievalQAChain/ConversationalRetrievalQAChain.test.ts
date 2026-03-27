@@ -1,12 +1,8 @@
 import path from 'path'
+import { AIMessage } from '@langchain/core/messages'
 import { Document } from '@langchain/core/documents'
 import { RunnableLambda } from '@langchain/core/runnables'
 import { ICommonObject, IMessage, INodeData, IServerSideEventStreamer } from '../../../src/Interface'
-
-jest.mock('../../../src/handler', () => ({
-    ConsoleCallbackHandler: jest.fn().mockImplementation(() => ({})),
-    additionalCallbacks: jest.fn().mockResolvedValue([])
-}))
 
 const { nodeClass: ConversationalRetrievalQAChainNode } = require('./ConversationalRetrievalQAChain')
 const langChainCorePackagePath = require.resolve('@langchain/core/package.json')
@@ -33,13 +29,43 @@ const createMemory = (history: IMessage[] = []) => ({
     clearChatMessages: jest.fn().mockResolvedValue(undefined)
 })
 
+const createStreamingCapableModel = (responses: string[], shouldStreamResponse: boolean) => {
+    const model = new FakeListChatModel({ responses })
+
+    if (shouldStreamResponse) {
+        model._generate = async (
+            _messages: unknown,
+            _options: unknown,
+            runManager: { handleLLMNewToken?: (token: string) => Promise<void> }
+        ) => {
+            const response = responses[0] ?? ''
+
+            for (const token of response) {
+                await runManager?.handleLLMNewToken?.(token)
+            }
+
+            return {
+                generations: [
+                    {
+                        text: response,
+                        message: new AIMessage(response)
+                    }
+                ],
+                llmOutput: {}
+            }
+        }
+    }
+
+    return model
+}
+
 const createHarness = ({
     history = [],
     responses = ['Answer from retrieved docs'],
     returnSourceDocuments = true,
     shouldStreamResponse = true
 }: HarnessOptions = {}) => {
-    const model = new FakeListChatModel({ responses })
+    const model = createStreamingCapableModel(responses, shouldStreamResponse)
     const retriever = RunnableLambda.from(async () => [
         new Document({ pageContent: 'Relevant context from the retriever', metadata: { id: 'doc-1' } })
     ])
@@ -67,7 +93,14 @@ const createHarness = ({
     const options: ICommonObject = {
         shouldStreamResponse,
         sseStreamer,
-        chatId: 'chat-1'
+        chatId: 'chat-1',
+        logger: {
+            verbose: jest.fn(),
+            debug: jest.fn(),
+            info: jest.fn(),
+            warn: jest.fn(),
+            error: jest.fn()
+        }
     }
 
     return { node, nodeData, options, memory, model, retriever, sseStreamer }
@@ -78,6 +111,7 @@ describe('ConversationalRetrievalQAChain test harness', () => {
         const harness = createHarness()
 
         const result = await harness.node.run(harness.nodeData, 'What does the document say?', harness.options)
+        await new Promise((resolve) => setTimeout(resolve, 0))
 
         expect(result).toEqual({
             text: 'Answer from retrieved docs',
@@ -111,6 +145,7 @@ describe('ConversationalRetrievalQAChain test harness', () => {
         })
 
         await harness.node.run(harness.nodeData, 'Stream the answer progressively', harness.options)
+        await new Promise((resolve) => setTimeout(resolve, 0))
 
         const streamedTokens = harness.sseStreamer.streamTokenEvent.mock.calls.map(([, token]) => token)
 

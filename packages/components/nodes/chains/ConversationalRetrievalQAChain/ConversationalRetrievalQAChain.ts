@@ -221,6 +221,8 @@ class ConversationalRetrievalQAChain_Chains implements INode {
         const history = ((await memory.getChatMessages(this.sessionId, false, prependMessages)) as IMessage[]) ?? []
         const baseChatHistory = serializeHistory({ chat_history: history }) as BaseMessage[]
         const formattedChatHistory = formatChatHistoryAsString(baseChatHistory)
+        const hasChatHistory = formattedChatHistory.length > 0
+        const skipK = hasChatHistory ? 1 : 0
         const retrieverChain = createRetrieverChain(model, vectorStoreRetriever, rephrasePrompt)
         let sourceDocuments: ICommonObject[] = []
 
@@ -242,7 +244,7 @@ class ConversationalRetrievalQAChain_Chains implements INode {
         }
 
         if (shouldStreamResponse) {
-            callbacks.push(new CustomChainHandler(sseStreamer, chatId))
+            callbacks.push(new CustomChainHandler(sseStreamer, chatId, skipK))
         }
 
         const text = (await answerChain.invoke({ question: input, chat_history: history }, { callbacks })) as string

@@ -1,4 +1,3 @@
-import { applyPatch } from 'fast-json-patch'
 import { DataSource } from 'typeorm'
 import { BaseLanguageModel } from '@langchain/core/language_models/base'
 import { BaseRetriever } from '@langchain/core/retrievers'
@@ -12,7 +11,7 @@ import type { Document } from '@langchain/core/documents'
 import { BufferMemoryInput } from '@langchain/classic/memory'
 import { ConversationalRetrievalQAChain } from '@langchain/classic/chains'
 import { getBaseClasses, mapChatMessageToBaseMessage, createTextOnlyOutputParser } from '../../../src/utils'
-import { ConsoleCallbackHandler, additionalCallbacks } from '../../../src/handler'
+import { ConsoleCallbackHandler, CustomChainHandler, additionalCallbacks } from '../../../src/handler'
 import {
     FlowiseMemory,
     ICommonObject,
@@ -220,6 +219,18 @@ class ConversationalRetrievalQAChain_Chains implements INode {
         const answerChain = createChain(model, vectorStoreRetriever, rephrasePrompt, customResponsePrompt)
 
         const history = ((await memory.getChatMessages(this.sessionId, false, prependMessages)) as IMessage[]) ?? []
+        const baseChatHistory = serializeHistory({ chat_history: history }) as BaseMessage[]
+        const formattedChatHistory = formatChatHistoryAsString(baseChatHistory)
+        const retrieverChain = createRetrieverChain(model, vectorStoreRetriever, rephrasePrompt)
+        let sourceDocuments: ICommonObject[] = []
+
+        if (returnSourceDocuments) {
+            const retrievedDocuments = (await retrieverChain.invoke({
+                question: input,
+                chat_history: formattedChatHistory
+            })) as Document[]
+            sourceDocuments = (retrievedDocuments ?? []) as ICommonObject[]
+        }
 
         const loggerHandler = new ConsoleCallbackHandler(options.logger, options?.orgId)
         const additionalCallback = await additionalCallbacks(nodeData, options)
@@ -230,59 +241,11 @@ class ConversationalRetrievalQAChain_Chains implements INode {
             callbacks.push(new LCConsoleCallbackHandler())
         }
 
-        const stream = answerChain.streamLog(
-            { question: input, chat_history: history },
-            { callbacks },
-            {
-                includeNames: [sourceRunnableName]
-            }
-        )
-
-        let streamedResponse: Record<string, any> = {}
-        let sourceDocuments: ICommonObject[] = []
-        let text = ''
-        let isStreamingStarted = false
-
-        for await (const chunk of stream) {
-            streamedResponse = applyPatch(streamedResponse, chunk.ops).newDocument
-
-            if (streamedResponse.final_output) {
-                text = streamedResponse.final_output?.output
-                if (Array.isArray(streamedResponse?.logs?.[sourceRunnableName]?.final_output?.output)) {
-                    sourceDocuments = streamedResponse?.logs?.[sourceRunnableName]?.final_output?.output
-                    if (shouldStreamResponse && returnSourceDocuments) {
-                        if (sseStreamer) {
-                            sseStreamer.streamSourceDocumentsEvent(chatId, sourceDocuments)
-                        }
-                    }
-                }
-                if (shouldStreamResponse && sseStreamer) {
-                    sseStreamer.streamEndEvent(chatId)
-                }
-            }
-
-            if (
-                Array.isArray(streamedResponse?.streamed_output) &&
-                streamedResponse?.streamed_output.length &&
-                !streamedResponse.final_output
-            ) {
-                const token = streamedResponse.streamed_output[streamedResponse.streamed_output.length - 1]
-
-                if (!isStreamingStarted) {
-                    isStreamingStarted = true
-                    if (shouldStreamResponse) {
-                        if (sseStreamer) {
-                            sseStreamer.streamStartEvent(chatId, token)
-                        }
-                    }
-                }
-                if (shouldStreamResponse) {
-                    if (sseStreamer) {
-                        sseStreamer.streamTokenEvent(chatId, token)
-                    }
-                }
-            }
+        if (shouldStreamResponse) {
+            callbacks.push(new CustomChainHandler(sseStreamer, chatId))
         }
+
+        const text = (await answerChain.invoke({ question: input, chat_history: history }, { callbacks })) as string
 
         await memory.addChatMessages(
             [

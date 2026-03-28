@@ -33,12 +33,14 @@ const createStreamingCapableModel = (responses: string[], shouldStreamResponse: 
     const model = new FakeListChatModel({ responses })
 
     if (shouldStreamResponse) {
+        let responseIndex = 0
         model._generate = async (
             _messages: unknown,
             _options: unknown,
             runManager: { handleLLMNewToken?: (token: string) => Promise<void> }
         ) => {
-            const response = responses[0] ?? ''
+            const response = responses[Math.min(responseIndex, responses.length - 1)] ?? ''
+            responseIndex += 1
 
             for (const token of response) {
                 await runManager?.handleLLMNewToken?.(token)
@@ -152,5 +154,34 @@ describe('ConversationalRetrievalQAChain test harness', () => {
         expect(harness.sseStreamer.streamStartEvent).toHaveBeenCalled()
         expect(streamedTokens.length).toBeGreaterThan(1)
         expect(streamedTokens.join('')).toBe('Progressive streaming answer')
+    })
+
+    it('emits source documents and does not leak condensed-question text in streamed tokens', async () => {
+        const condensedQuestionText = 'CONDENSED QUESTION SHOULD NOT STREAM'
+        const finalAnswerText = 'Final streamed answer from retrieved docs'
+        const harness = createHarness({
+            history: [
+                { message: 'Earlier user question', type: 'userMessage' },
+                { message: 'Earlier assistant answer', type: 'apiMessage' }
+            ],
+            responses: [condensedQuestionText, finalAnswerText],
+            returnSourceDocuments: true,
+            shouldStreamResponse: true
+        })
+
+        await harness.node.run(harness.nodeData, 'Follow-up question', harness.options)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        const streamedTokens = harness.sseStreamer.streamTokenEvent.mock.calls.map(([, token]) => token)
+        const streamedText = streamedTokens.join('')
+
+        expect(streamedText).toBe(finalAnswerText)
+        expect(streamedText).not.toContain(condensedQuestionText)
+        expect(harness.sseStreamer.streamSourceDocumentsEvent).toHaveBeenCalledWith('chat-1', [
+            expect.objectContaining({
+                pageContent: 'Relevant context from the retriever',
+                metadata: { id: 'doc-1' }
+            })
+        ])
     })
 })

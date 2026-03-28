@@ -226,7 +226,9 @@ class ConversationalRetrievalQAChain_Chains implements INode {
         const history = ((await memory.getChatMessages(this.sessionId, false, prependMessages)) as IMessage[]) ?? []
         const baseChatHistory = serializeHistory({ chat_history: history }) as BaseMessage[]
         const hasChatHistory = baseChatHistory.length > 0
-        const skipK = hasChatHistory ? 1 : 0
+        // CustomChainHandler decrements skipK in handleLLMStart before checking tokens,
+        // so skipping the first LLM call requires an initial value of 2.
+        const skipK = hasChatHistory ? 2 : 0
 
         const loggerHandler = new ConsoleCallbackHandler(options.logger, options?.orgId)
         const additionalCallback = await additionalCallbacks(nodeData, options)

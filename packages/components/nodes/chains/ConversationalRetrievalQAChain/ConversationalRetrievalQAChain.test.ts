@@ -185,3 +185,31 @@ describe('ConversationalRetrievalQAChain test harness', () => {
         ])
     })
 })
+
+it('should emit exactly one non-empty sourceDocuments SSE event (expected behavior)', async () => {
+    const harness = createHarness({
+        history: [
+            { message: 'Earlier user question', type: 'userMessage' },
+            { message: 'Earlier assistant answer', type: 'apiMessage' }
+        ],
+        responses: ['CONDENSED SHOULD BE SKIPPED', 'Final answer'],
+        returnSourceDocuments: true,
+        shouldStreamResponse: true
+    })
+
+    await harness.node.run(harness.nodeData, 'Follow-up question', harness.options)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const sourceDocCalls = harness.sseStreamer.streamSourceDocumentsEvent.mock.calls
+    const sourceDocPayloads = sourceDocCalls.map(([, payload]) => payload)
+    const nonEmptyPayloads = sourceDocPayloads.filter((payload) => Array.isArray(payload) && payload.length > 0)
+
+    expect(sourceDocCalls.length).toBe(1)
+    expect(nonEmptyPayloads).toHaveLength(1)
+    expect(nonEmptyPayloads[0]).toEqual([
+        expect.objectContaining({
+            pageContent: 'Relevant context from the retriever',
+            metadata: { id: 'doc-1' }
+        })
+    ])
+})

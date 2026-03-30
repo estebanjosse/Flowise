@@ -405,6 +405,9 @@ export class CustomChainHandler extends BaseCallbackHandler {
             Callback Order is "Chain Start -> LLM Start --> LLM Token --> LLM End -> Chain End" for normal responses.
             Callback Order is "Chain Start -> Chain End" for cached responses.
          */
+        const sourceDocuments = outputs?.sourceDocuments as unknown
+        const hasSourceDocuments = Array.isArray(sourceDocuments) ? sourceDocuments.length > 0 : Boolean(sourceDocuments)
+
         if (this.cachedResponse && parentRunId === undefined) {
             const cachedValue = outputs.text || outputs.response || outputs.output || outputs.output_text
             //split at whitespace, and keep the whitespace. This is to preserve the original formatting.
@@ -419,15 +422,15 @@ export class CustomChainHandler extends BaseCallbackHandler {
                     this.sseStreamer.streamTokenEvent(this.chatId, token)
                 }
             })
-            if (this.returnSourceDocuments && this.sseStreamer) {
-                this.sseStreamer.streamSourceDocumentsEvent(this.chatId, outputs?.sourceDocuments)
+            if (this.returnSourceDocuments && this.sseStreamer && hasSourceDocuments) {
+                this.sseStreamer.streamSourceDocumentsEvent(this.chatId, sourceDocuments)
             }
             if (this.sseStreamer) {
                 this.sseStreamer.streamEndEvent(this.chatId)
             }
         } else {
-            if (this.returnSourceDocuments && this.sseStreamer) {
-                this.sseStreamer.streamSourceDocumentsEvent(this.chatId, outputs?.sourceDocuments)
+            if (this.returnSourceDocuments && this.sseStreamer && parentRunId === undefined && hasSourceDocuments) {
+                this.sseStreamer.streamSourceDocumentsEvent(this.chatId, sourceDocuments)
             }
         }
     }

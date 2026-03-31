@@ -224,8 +224,7 @@ class ConversationalRetrievalQAChain_Chains implements INode {
         const answerChain = createChain(model, vectorStoreRetriever, rephrasePrompt, customResponsePrompt)
 
         const history = ((await memory.getChatMessages(this.sessionId, false, prependMessages)) as IMessage[]) ?? []
-        const baseChatHistory = serializeHistory({ chat_history: history }) as BaseMessage[]
-        const hasChatHistory = baseChatHistory.length > 0
+        const hasChatHistory = history.length > 0
         // CustomChainHandler decrements skipK in handleLLMStart before checking tokens,
         // so skipping the first LLM call requires an initial value of 2.
         const skipK = hasChatHistory ? 2 : 0
